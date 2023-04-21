@@ -1,0 +1,72 @@
+project: "Unseg"
+name: "TransFGU"
+save_dir: "result/${dataset.name}/${name}"
+data_dir: "../Datasets"
+
+# ---------------------------------------------------------------- #
+dataset:
+  name: "cocostuff"
+  num_class: 27
+  psuedo_path: "./psuedo_labels/${dataset.name}"
+
+# ---------------------------------------------------------------- #
+wandb:
+  mode: "online"
+  notes: null
+  id: null
+  tags_dataset: ${dataset.name}
+  tags_model: ${model.backbone.name}
+
+seed: 12345
+
+resume:
+  checkpoint: null # Always non-null if eval
+  strict: true
+
+# ---------------------------------------------------------------- #
+model:
+  pretrained: "../Datasets/pretrained/dino_deitsmall8_pretrain.pth"
+  encoder :
+    encoder_fix : True
+    arch: "vit_small"
+    patch_size: 8
+
+  decoder:
+    n_things: 12
+    n_stuff: 15
+
+
+
+loss:
+  cat_weight: 1.0
+  uncertainty_weight: 0.3
+  cls_emb_weight: 1.0
+
+# ---------------------------------------------------------------- #
+dataloader:
+  train:
+    batch_size: 256  # per-GPU  (approx. 10GB)
+    num_workers: 4  # per-process
+  valid:
+    batch_size: 16  # per-GPU
+    num_workers: 4 # per-process
+
+# ---------------------------------------------------------------- #
+optimizer:
+  name: "adam"
+  lr: 0.0001  # 0.001 * batch_size_per_gpu * num_accum * num_gpus
+  lr_scale : 0.1
+  momentum: 0.9
+  weight_decay: 0.0005
+
+scheduler:
+  name: "constant"     # "cos" "custom" "constant"
+
+# ---------------------------------------------------------------- #
+trainer:
+  fp16: true
+  max_epochs: 200
+  print_interval_iters: 20
+  valid_interval_epochs: 1
+  clip_grad: 100.0
+  num_accum: 1
