@@ -1,9 +1,7 @@
 from typing import Dict, Tuple, List, Optional
-import numpy as np
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torchvision import transforms as T
 from copy import deepcopy
 from utils.transfgu_utils import RandomApply, load_pretrained_weights
