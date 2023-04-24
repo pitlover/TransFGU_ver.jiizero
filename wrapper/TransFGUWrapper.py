@@ -27,32 +27,21 @@ class TransFGUWrapper(nn.Module):
         self.model = model
 
     def forward(self,
-                img1: torch.Tensor,
-                label: torch.Tensor,
-                img2: torch.Tensor = None,
-                aug_weak: torch.Tensor = None,
-                aug_strong: torch.Tensor = None,
-                iter: int = 0,
-                max_iter: int = 0):
-        '''
+                img: torch.Tensor,
+                label: torch.Tensor = None,
+                pseudo_things: torch.Tensor = None,
+                pseudo_stuffs: torch.Tensor = None,
+                is_augment: bool = False,
+                epoch: int = 200,
+                iter: int = 0
+                ):
+        feat, results = self.model(img=img, label=label, pseudo_things=pseudo_things, pseudo_stuffs=pseudo_stuffs,
+                                   is_augment=is_augment, epoch=epoch, iter=iter)
 
-        :param img1: (b, 3, h, w)
-        :param label: (b * label_ratio, 3, h, w)
-        :param img2:
-        :param aug_weak:
-        :param aug_strong:
-        :param iter:
-        :return:
-        '''
+        if self.training:
+            model_loss = self.cat_weight * results["cat-loss"] + self.uncertainty_weight * results[
+                "uncertainty-loss"] + self.cls_emb_weight * results["cls-emb-loss"]
 
-        feat, results = self.model(img=img1, label=label, aug_weak=img2, aug_strong=aug_strong,
-                                   iter=iter)
-        if not self.training:
-            return feat
-
-        model_loss = self.cat_weight * results["cat-loss"] + self.uncertainty_weight * results[
-            "uncertainty-loss"] + self.cls_emb_weight * results["cls-emb-loss"]
-
-        results["loss"] = model_loss
+            results["loss"] = model_loss
 
         return feat, results

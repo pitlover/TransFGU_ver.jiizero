@@ -7,7 +7,7 @@ from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR, 
 from torch.cuda.amp import GradScaler
 
 from utils.dist_utils import is_distributed_set
-
+from data.dataset import UnsegDataset
 from model.transfgu import TransFGU
 from wrapper.TransFGUWrapper import TransFGUWrapper
 
@@ -55,6 +55,19 @@ def split_paramaters(model: nn.Module, cfg: Dict):
         {'params': decoder_regularized},
         {'params': decoder_not_regularized, 'weight_decay': 0.},
     ]
+
+
+def build_dataset(data_dir: str, is_train: bool, seed: int, cfg: Dict) -> UnsegDataset:
+    # cfg = cfg["dataset"]
+    dataset = UnsegDataset(
+        dataset_name=cfg["name"].lower(),
+        data_dir=data_dir,
+        is_train=is_train,
+        seed=seed,
+        cfg=cfg
+    )
+
+    return dataset
 
 
 def build_dataloader(dataset: UnsegDataset, batch_size: int, is_train: bool, cfg: Dict) -> DataLoader:

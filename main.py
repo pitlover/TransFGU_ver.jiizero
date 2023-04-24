@@ -8,6 +8,7 @@ import wandb
 import numpy as np
 import torch
 import torch.cuda.amp as amp
+import torch.nn.functional as F
 from torch.nn.parallel.distributed import DistributedDataParallel
 from torch.nn.utils.clip_grad import clip_grad_norm_
 
@@ -19,11 +20,10 @@ from utils.dist_utils import all_reduce_dict
 from utils.print_utils import time_log
 from utils.param_utils import count_params, compute_param_norm
 
-from itertools import cycle
+from model.others.metric import scores, UnsegMetrics
 from build import (build_dataset, build_dataloader, build_model,
                    build_optimizer, build_scheduler, build_scaler)
 from wrapper.TransFGUWrapper import TransFGUWrapper
-from model.others.metric import AverageMeter, UnsegMetric
 
 
 def train_epoch(
@@ -31,11 +31,11 @@ def train_epoch(
         optimizer,
         scheduler,
         scaler,
-        label_dataloader,
-        unlabel_dataloader,
+        dataloader,
         cfg: Dict,
         device: torch.device,
-        current_iter: int
+        current_iter: int,
+        epoch: int,
 ) -> int:
     print_interval = cfg["print_interval_iters"]
     fp16 = cfg.get("fp16", False)
@@ -50,27 +50,20 @@ def train_epoch(
     backward_time = 0.0
     step_time = 0.0
 
-    unlabel_dataloader_iter = cycle(unlabel_dataloader)
     data_start_time = time.time()
 
-    for it, label_data in enumerate(label_dataloader):
+    for it, data in enumerate(dataloader):
         s = time_log()
-        s += f"Current iter: {current_iter} (epoch done: {it / len(label_dataloader) * 100:.2f} %)\n"
+        s += f"Current iter: {current_iter} (epoch done: {it / len(dataloader) * 100:.2f} %)\n"
 
         # -------------------------------- data -------------------------------- #
-        (img1, img2, aug_weak, aug_strong), label = label_data
-        (uimg1, uimg2, uaug_weak, uaug_strong), ulabel = next(unlabel_dataloader_iter)
+        img, label, pseudo_things, pseudo_stuffs = data["img"], data["label"], data["pseudo_label_things"], \
+                                                   data["pseudo_label_stuff"]
+        img, label, pseudo_things, pseudo_stuffs = img.to(device, non_blocking=True), \
+                                                   label.to(device, non_blocking=True), \
+                                                   pseudo_things.to(device, non_blocking=True), \
+                                                   pseudo_stuffs.to(device, non_blocking=True)
 
-        img1 = torch.cat([img1, uimg1], 0)
-        img2 = torch.cat([img2, uimg2], 0)
-        aug_weak = torch.cat([aug_weak, uaug_weak], 0)
-        aug_strong = torch.cat([aug_strong, uaug_strong], 0)
-
-        img1, img2, aug_weak, aug_strong, label = img1.to(device, non_blocking=True), \
-                                                  img2.to(device, non_blocking=True), \
-                                                  aug_weak.to(device, non_blocking=True), \
-                                                  aug_strong.to(device, non_blocking=True), \
-                                                  label.to(device, non_blocking=True)
         data_time = time.time() - data_start_time
 
         # -------------------------------- loss -------------------------------- #
@@ -80,8 +73,9 @@ def train_epoch(
         if it % num_accum == (num_accum - 1):  # update step
             forward_start_time = time.time()
             with amp.autocast(enabled=fp16):
-                _, output = model(img1=img1, label=label, img2=img2, aug_weak=aug_weak,
-                                  aug_strong=aug_strong, iter=it, max_iter=len(label_dataloader))  # {"loss", "acc1"}
+                _, output = model(img=img, label=label, pseudo_things=pseudo_things, pseudo_stuffs=pseudo_stuffs,
+                                  is_augment=True,
+                                  epoch=epoch, iter=it)  # {"loss", "acc1"}
             forward_time = time.time() - forward_start_time
 
             backward_start_time = time.time()
@@ -91,8 +85,11 @@ def train_epoch(
             backward_time = time.time() - backward_start_time
 
             step_start_time = time.time()
-            scaler.unscale_(optimizer)
-            grad_norm = clip_grad_norm_(model.parameters(), max_norm=clip_grad)
+            # scaler.unscale_(optimizer)
+            # grad_norm = clip_grad_norm_(model.parameters(), max_norm=clip_grad)
+            for param in model.parameters():
+                if param.grad is not None:
+                    param.grad.data.clamp_(-1, 1)
             scaler.step(optimizer)
             scaler.update()
             # scheduler.step()
@@ -101,9 +98,8 @@ def train_epoch(
         elif isinstance(model, DistributedDataParallel):  # non-update step and DDP
             with model.no_sync():
                 with amp.autocast(enabled=fp16):
-                    _, output = model(img1=img1, label=label, img2=img2, aug_weak=aug_weak,
-                                      aug_strong=aug_strong,
-                                      iter=it, max_iter=len(label_dataloader))  # {"loss", "acc1"}
+                    _, output = model(img=img, label=label, pseudo_things=pseudo_things, pseudo_stuffs=pseudo_stuffs,
+                                      iter=it, max_iter=len(dataloader))  # {"loss", "acc1"}
 
                 loss = output["loss"]
                 loss = loss / num_accum
@@ -111,8 +107,8 @@ def train_epoch(
 
         else:  # non-update step and not DDP
             with amp.autocast(enabled=fp16):
-                _, output = model(img1=img1, label=label, img2=img2, aug_weak=aug_weak,
-                                  aug_strong=aug_strong, iter=it, max_iter=len(label_dataloader))  # {"loss", "acc1"}
+                _, output = model(img=img, label=label, pseudo_things=pseudo_things, pseudo_stuffs=pseudo_stuffs,
+                                  iter=it, max_iter=len(dataloader))  # {"loss", "acc1"}
 
             loss = output["loss"]
             loss = loss / num_accum
@@ -166,35 +162,31 @@ def valid_epoch(
 
     targets, preds = np.array([]), np.array([])
     output = {}
+    n_cls = cfg["n_cls"]
+    assert n_cls == 27
+    histogram = np.zeros((n_cls, n_cls))
+
     for it, data in enumerate(dataloader):
         # -------------------------------- data -------------------------------- #
-        (img, _, _, _), label = data
+        img, label = data["img"], data["label"]
         img = img.to(device, non_blocking=True)
         label = label.to(device, non_blocking=True)
+        B, C, H, W = img.shape
 
         # -------------------------------- loss -------------------------------- #
         with amp.autocast(enabled=fp16):
-            prob = model(img1=img, label=label, iter=it)
-            _, pred = prob.max(1)
+            prob = model(img, iter=it)
+            prob = F.interpolate(prob, size=(H, W), mode='bilinear', align_corners=False)
+            preds = prob.topk(1, dim=1)[1].view(B, -1).cpu().numpy()
+            label_cat_ = label.view(B, -1).cpu().numpy()
+            histogram += scores(label_cat_, preds, n_cls)
 
-        targets = np.append(targets, label.cpu().numpy())
-        preds = np.append(preds, pred.cpu().numpy())
-
-    targets, preds = targets.astype(int), preds.astype(int)
-
-    seen_acc, unseen_acc, all_acc, unseen_nmi = UnsegMetric(targets, preds)
-
-    output["all_acc"] = all_acc
-    output["unseen_acc"] = unseen_acc
-    output["seen_acc"] = seen_acc
-    output["unseen_nmi"] = unseen_nmi
+    output = UnsegMetrics(histogram, n_cls)
 
     if is_master():
         wandb.log({
-            "val_all_acc": output["all_acc"],
-            "val_unseen_acc": output["unseen_acc"],
-            "val_seen_acc": output["seen_acc"],
-            "val_unseen_nmi": output["unseen_nmi"],
+            "Cluster_mIoU": output["mean_iou"],
+            "Cluster_Accuracy": output["overall_precision (pixel accuracy)"],
             "iterations": current_iter,
         })
 
@@ -218,7 +210,6 @@ def run(cfg: Dict, debug: bool = False, eval: bool = False) -> None:
     # ======================================================================================== #
     data_dir = cfg["data_dir"]
 
-    # TODO dataset + datastetloader --------------------------
     train_dataset = build_dataset(data_dir, is_train=True, seed=cfg["seed"], cfg=cfg["dataset"])
     train_dataloader = build_dataloader(train_dataset, batch_size=cfg["dataloader"]["train"]["batch_size"],
                                         is_train=True, cfg=cfg["dataloader"]["train"])
@@ -227,7 +218,7 @@ def run(cfg: Dict, debug: bool = False, eval: bool = False) -> None:
     valid_dataset = build_dataset(data_dir, is_train=False, is_label=False, seed=cfg)
     valid_dataloader = build_dataloader(valid_dataset, batch_size=cfg["dataloader"]["valid"]["batch_size"],
                                         is_train=False, cfg=cfg["dataloader"]["valid"])
-    # TODO dataset + datastetloader --------------------------
+
     # ======================================================================================== #
     # Model
     # ======================================================================================== #
@@ -235,7 +226,8 @@ def run(cfg: Dict, debug: bool = False, eval: bool = False) -> None:
     model = model.to(device)
 
     if is_distributed_set():
-        model = DistributedDataParallel(model, device_ids=[local_rank], output_device=device)
+        model = DistributedDataParallel(model, device_ids=[local_rank], output_device=device,
+                                        find_unused_parameters=True)  # TODO fix to freeze
         # model = nn.SyncBatchNorm.convert_sync_batchnorm(model)  # optional for ImageNet
         model_m = model.module  # actual model without wrapping
     else:
@@ -268,7 +260,7 @@ def run(cfg: Dict, debug: bool = False, eval: bool = False) -> None:
     # ======================================================================================== #
     optimizer = build_optimizer(model_m, cfg=cfg["optimizer"])
     scheduler = build_scheduler(optimizer, cfg=cfg["scheduler"],
-                                iter_per_epoch=len(train_dataset),  # TODO need to change
+                                iter_per_epoch=len(train_dataset),
                                 num_epoch=cfg["trainer"]["max_epochs"],
                                 num_accum=cfg["trainer"].get("num_accum", 1))
     scaler = build_scaler(is_fp16=cfg["trainer"].get("fp16", False))
@@ -325,7 +317,7 @@ def run(cfg: Dict, debug: bool = False, eval: bool = False) -> None:
         # -------- train body -------- #
         epoch_start_time = time.time()  # second
         current_iter = train_epoch(model, optimizer, scheduler, scaler, train_dataloader,
-                                   train_cfg, device, current_iter)
+                                   train_cfg, device, current_iter, epoch=current_epoch)
         epoch_time = time.time() - epoch_start_time
         if is_master():
             s = time_log()
