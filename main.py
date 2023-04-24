@@ -151,6 +151,7 @@ def train_epoch(
 def valid_epoch(
         model: TransFGUWrapper,
         dataloader,
+        n_cls,
         cfg: Dict,
         device: torch.device,
         current_iter: int,
@@ -160,10 +161,6 @@ def valid_epoch(
     model.eval()
     torch.set_grad_enabled(False)  # same as 'with torch.no_grad():'
 
-    targets, preds = np.array([]), np.array([])
-    output = {}
-    n_cls = cfg["n_cls"]
-    assert n_cls == 27
     histogram = np.zeros((n_cls, n_cls))
 
     for it, data in enumerate(dataloader):
@@ -278,6 +275,7 @@ def run(cfg: Dict, debug: bool = False, eval: bool = False) -> None:
     train_cfg = cfg["trainer"]
     max_epochs = train_cfg["max_epochs"]
     valid_interval = train_cfg["valid_interval_epochs"]
+    n_cls = cfg["dataset"]["n_thing"] + cfg["dataset"]["n_stuff"]
 
     # -------- status -------- #
     current_epoch = 0
@@ -292,7 +290,7 @@ def run(cfg: Dict, debug: bool = False, eval: bool = False) -> None:
         max_epochs = ckpt["stats"]["max_epochs"]
 
         # -------- check -------- #
-        valid_result = valid_epoch(model, valid_dataloader, train_cfg, device, current_iter)
+        valid_result = valid_epoch(model, valid_dataloader, n_cls, train_cfg, device, current_iter)
         s = time_log()
         s += f"Resume valid epoch {current_epoch} / {max_epochs}\n"
         s += f"... acc: {valid_result['acc']:.4f}\n"
@@ -344,7 +342,7 @@ def run(cfg: Dict, debug: bool = False, eval: bool = False) -> None:
                 print(s)
 
             valid_start_time = time.time()  # second
-            valid_result = valid_epoch(model, valid_dataloader, train_cfg, device, current_iter)
+            valid_result = valid_epoch(model, valid_dataloader, n_cls, train_cfg, device, current_iter)
             valid_time = time.time() - valid_start_time
 
             s = time_log()

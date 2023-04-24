@@ -8,7 +8,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 from pycocotools.coco import COCO
 from utils.transfgu_utils import coco_stuff_id_idx_map, coco_stuff_id_idx_map_coarse
-from transform import ToTensor, ResizeTensor, NormInput
+from data.transform import ToTensor, ResizeTensor, NormInput
 
 
 def get_transform(dataset_name: str, size: int, is_train: bool):
@@ -39,8 +39,8 @@ def UnsegDataset(
     if dataset_name == "cocostuff":
         dataset = Cocostuff(
             split="train2017" if is_train else "val2017",
-            data_dir=data_dir,
-            pseudo_dir=cfg["psuedo_path"],
+            data_dir=os.path.join(data_dir, dataset_name + "27"),
+            pseudo_dir=cfg["pseudo_dir"],
             pseudo_size=cfg["pseudo_size"],
             n_stuff=cfg["n_stuff"],
             n_thing=cfg["n_thing"],
@@ -102,13 +102,13 @@ class Cocostuff(Dataset):
         img_meta = img_meta[0]
 
         if self.pseudo_dir is not None:
-            psuedo_thing_path = os.path.join(self.pseudo_dir, img_meta["file_name"].split(".")[0] +
+            pseudo_thing_path = os.path.join(self.pseudo_dir, img_meta["file_name"].split(".")[0] +
                                              f'_fg_{self.n_thing}_{self.pseudo_size}x{self.pseudo_size}')
 
-            psuedo_stuff_path = os.path.join(self.pseudo_dir, img_meta["file_name"].split(".")[0] +
+            pseudo_stuff_path = os.path.join(self.pseudo_dir, img_meta["file_name"].split(".")[0] +
                                              f'_bg_{self.n_stuff}_{self.pseudo_size}x{self.pseudo_size}')
 
-            assert os.path.exists(psuedo_thing_path) and os.path.exists(psuedo_stuff_path)
+            assert os.path.exists(pseudo_thing_path) and os.path.exists(pseudo_stuff_path)
 
         # image
         image = np.array(Image.open(f"{self.JPEGPath}/{img_meta['file_name']}").convert('RGB'))
@@ -126,8 +126,8 @@ class Cocostuff(Dataset):
         sample['img'] = image
         sample['label'] = label_cat
         sample['meta'] = {'sample_name': img_meta['file_name'].split('.')[0]}
-        sample['pseudo_label_things'] = pickle.load(open(psuedo_thing_path, 'rb'))
-        sample['pseudo_label_stuff'] = pickle.load(open(psuedo_stuff_path, 'rb'))
+        sample['pseudo_label_things'] = pickle.load(open(pseudo_thing_path, 'rb'))
+        sample['pseudo_label_stuff'] = pickle.load(open(pseudo_stuff_path, 'rb'))
 
         if self.transform is not None:
             sample = self.transform(sample)

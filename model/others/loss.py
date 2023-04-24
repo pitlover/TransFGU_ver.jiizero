@@ -12,13 +12,13 @@ class bootstrap_loss(nn.Module):
 
     def forward(self, masks: torch.Tensor,
                 pseudo_label: torch.Tensor,
-                psuedo_label_teacher: torch.Tensor,
+                pseudo_label_teacher: torch.Tensor,
                 epoch: int):
         '''
 
         :param masks: (b, n_cls, hw, [0, 1], fg+bg)
         :param pseudo_label: (b, hw) binary
-        :param psuedo_label_teacher: (b, hw) binary
+        :param pseudo_label_teacher: (b, hw) binary
         '''
 
         N, N_cls_fgbg, h, w = masks.shape
@@ -27,16 +27,16 @@ class bootstrap_loss(nn.Module):
         pseudo_label_norm = torch.stack(
             [(label - label.min()) / (label.max() - label.min()) for label in pseudo_label_blur])
 
-        if psuedo_label_teacher is not None:
+        if pseudo_label_teacher is not None:
             w_1 = 0.5
             w_2 = 0.5
-            pseudo_label_teacher_blur = psuedo_label_teacher
+            pseudo_label_teacher_blur = pseudo_label_teacher
             pseudo_label_teacher_norm = pseudo_label_teacher_blur.softmax(1)
             pseudo_label_norm = w_1 * pseudo_label_teacher_norm + w_2 * pseudo_label_norm
 
         bootstrapped_pseudo_labels = pseudo_label_norm.max(1)[1]
 
-        if psuedo_label_teacher is not None:
+        if pseudo_label_teacher is not None:
 
             alpha = self.alpha_list[-1] if not (epoch < len(self.alpha_list)) else self.alpha_list[epoch]
 

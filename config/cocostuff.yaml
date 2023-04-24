@@ -7,7 +7,7 @@ data_dir: "../Datasets"
 dataset:
   name: "cocostuff"
   num_class: 27
-  psuedo_path: "./psuedo_labels/${dataset.name}"
+  pseudo_dir: "./pseudo_labels/${dataset.name}"
   img_size: 320
   pseudo_size: 40
   n_thing: 12
@@ -19,7 +19,7 @@ wandb:
   notes: null
   id: null
   tags_dataset: ${dataset.name}
-  tags_model: ${model.backbone.name}
+  tags_model: ${model.encoder.arch}
 
 seed: 12345
 
@@ -75,4 +75,3 @@ trainer:
   valid_interval_epochs: 1
   clip_grad: 1000.0
   num_accum: 1
-  n_cls: ${dataset.n_thing} + ${dataset.n_stuff}
